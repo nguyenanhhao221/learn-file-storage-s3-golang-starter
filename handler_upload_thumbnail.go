@@ -59,6 +59,11 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "Couldn't ParseMediaType", err)
 		return
 	}
+	if mediatype != "image/jpeg" && mediatype != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "mediatype is not valid", nil)
+		return
+	}
+
 	fileExtension := getFileExtension(mediatype)
 
 	video, err := cfg.db.GetVideo(videoID)
