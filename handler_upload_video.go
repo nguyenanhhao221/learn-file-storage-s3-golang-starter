@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -97,6 +98,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Process video for fast start
+	fastStartVideoFilePath, err := processVideoForFastStart(tf.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "couldn't process video for fast start", err)
+		return
+	}
+	defer os.Remove(fastStartVideoFilePath)
+
+	processedVideo, err := os.Open(fastStartVideoFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "couldn't open processed video", err)
+		return
+	}
+	defer processedVideo.Close()
+
 	// Generate random filename for S3
 	b := make([]byte, 32)
 	_, err = rand.Read(b)
@@ -119,7 +135,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		Bucket:      &cfg.s3Bucket,
 		Key:         &fileKey,
 		ContentType: &mediatype,
-		Body:        tf,
+		Body:        processedVideo,
 	}
 	_, err = cfg.s3Client.PutObject(context.Background(), &putObjectInput)
 	if err != nil {
@@ -192,4 +208,16 @@ func getAspectRatioPrefix(aspectRatio string) string {
 	default:
 		return "other"
 	}
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	fastStartVideoFilePath := fmt.Sprintf("%s.processing", filePath)
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", fastStartVideoFilePath)
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("error when running ffmpeg command to processVideoForFastStart: %v\n", err)
+		return "", err
+	}
+
+	return fastStartVideoFilePath, nil
 }
