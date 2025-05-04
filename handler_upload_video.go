@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -104,8 +107,14 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	base64Encoding := base64.RawURLEncoding
 	base64Rand := base64Encoding.EncodeToString(b)
 
+	aspectRatio, err := getVideoAspectRatio(tf.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get video aspect ratio", err)
+		return
+	}
+	prefixAspectRatio := getAspectRatioPrefix(aspectRatio)
 	// Upload file to S3
-	fileKey := fmt.Sprintf("%s.%s", base64Rand, fileExtension)
+	fileKey := fmt.Sprintf("%s/%s.%s", prefixAspectRatio, base64Rand, fileExtension)
 	putObjectInput := s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &fileKey,
@@ -129,4 +138,58 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	// Return updated video object
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var b bytes.Buffer
+	cmd.Stdout = &b
+	err := cmd.Run()
+	if err != nil {
+		return "", err
+	}
+	var probeData struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+
+	err = json.Unmarshal(b.Bytes(), &probeData)
+	if err != nil {
+		return "", fmt.Errorf("failed to unmarshal ffprobe output: %w", err)
+	}
+
+	if len(probeData.Streams) == 0 {
+		return "", fmt.Errorf("no video streams found")
+	}
+	width := probeData.Streams[0].Width
+	height := probeData.Streams[0].Height
+	// Normalize aspect ratio to common formats
+	var normalizedRatio string
+	widthFloat := float64(width)
+	heightFloat := float64(height)
+	ratio := widthFloat / heightFloat
+
+	// Check if ratio matches common formats with some tolerance
+	const tolerance = 0.1
+	if ratio >= (16.0/9.0)-tolerance && ratio <= (16.0/9.0)+tolerance {
+		normalizedRatio = "16:9"
+	} else if ratio >= (9.0/16.0)-tolerance && ratio <= (9.0/16.0)+tolerance {
+		normalizedRatio = "9:16"
+	} else {
+		normalizedRatio = "other"
+	}
+	return normalizedRatio, nil
+}
+
+func getAspectRatioPrefix(aspectRatio string) string {
+	switch aspectRatio {
+	case "16:9":
+		return "landscape"
+	case "9:16":
+		return "portrait"
+	default:
+		return "other"
+	}
 }
